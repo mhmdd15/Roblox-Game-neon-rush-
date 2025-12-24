@@ -1,0 +1,508 @@
+-- StarterPlayerScripts/ClientController
+-- ✅ HUD + HowTo + Level Select + Win screen
+-- ✅ Laser warning text
+-- ✅ DEV PANEL (P): reset round all, clear obstacles all, restart level all, skip level all,
+--    speed slider, laser frequency slider, unlock all levels
+-- ✅ Fly toggle (F) (dev only)
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+
+local player = Players.LocalPlayer
+local uiEvent = ReplicatedStorage:WaitForChild("GameUIEvent")
+local levelSelectEvent = ReplicatedStorage:WaitForChild("LevelSelectEvent")
+local laserEvent = ReplicatedStorage:WaitForChild("LaserEvent")
+local devEvent = ReplicatedStorage:WaitForChild("DevControlEvent")
+
+-- ===== local dev check (matches server rules) =====
+local function isDevLocal(dataIsDev)
+	-- Server tells us "isDev" safely; use that.
+	return dataIsDev == true
+end
+
+-- Colors per level (1 green -> 5 red)
+local levelColors = {
+	[1] = Color3.fromRGB(40, 200, 60),
+	[2] = Color3.fromRGB(140, 220, 80),
+	[3] = Color3.fromRGB(240, 210, 60),
+	[4] = Color3.fromRGB(255, 140, 60),
+	[5] = Color3.fromRGB(220, 40, 40),
+}
+
+-- ===== HUD =====
+local gui = Instance.new("ScreenGui")
+gui.Name = "HUD"
+gui.ResetOnSpawn = false
+gui.Parent = player:WaitForChild("PlayerGui")
+
+local frame = Instance.new("Frame")
+frame.Parent = gui
+frame.Position = UDim2.new(0, 14, 0, 14)
+frame.Size = UDim2.new(0, 340, 0, 168)
+frame.BackgroundTransparency = 0.25
+frame.BorderSizePixel = 0
+
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 12)
+corner.Parent = frame
+
+local title = Instance.new("TextLabel")
+title.Parent = frame
+title.BackgroundTransparency = 1
+title.Position = UDim2.new(0, 12, 0, 8)
+title.Size = UDim2.new(1, -24, 0, 24)
+title.Font = Enum.Font.GothamBold
+title.TextSize = 18
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Text = "Neon Rush"
+
+local stats = Instance.new("TextLabel")
+stats.Parent = frame
+stats.BackgroundTransparency = 1
+stats.Position = UDim2.new(0, 12, 0, 38)
+stats.Size = UDim2.new(1, -24, 0, 98)
+stats.Font = Enum.Font.Gotham
+stats.TextSize = 16
+stats.TextXAlignment = Enum.TextXAlignment.Left
+stats.TextYAlignment = Enum.TextYAlignment.Top
+stats.Text = "Level: 1\nLives: 3\nTime: 2:00\nDistance: 0\nUnlocked: 1"
+
+local laserLabel = Instance.new("TextLabel")
+laserLabel.Parent = frame
+laserLabel.BackgroundTransparency = 1
+laserLabel.Position = UDim2.new(0, 12, 1, -26)
+laserLabel.Size = UDim2.new(1, -24, 0, 22)
+laserLabel.Font = Enum.Font.GothamBold
+laserLabel.TextSize = 16
+laserLabel.TextXAlignment = Enum.TextXAlignment.Left
+laserLabel.Text = ""
+
+local function fmtTime(sec)
+	sec = math.max(0, sec)
+	return string.format("%d:%02d", math.floor(sec / 60), sec % 60)
+end
+
+-- ===== HOW TO PLAY POPUP =====
+local howTo = Instance.new("Frame")
+howTo.Parent = gui
+howTo.Size = UDim2.new(0, 440, 0, 280)
+howTo.Position = UDim2.new(0.5, -220, 0.5, -140)
+howTo.BackgroundTransparency = 0.15
+howTo.Visible = false
+howTo.BorderSizePixel = 0
+
+local howCorner = Instance.new("UICorner")
+howCorner.CornerRadius = UDim.new(0, 14)
+howCorner.Parent = howTo
+
+local howTitle = Instance.new("TextLabel")
+howTitle.Parent = howTo
+howTitle.BackgroundTransparency = 1
+howTitle.Position = UDim2.new(0, 16, 0, 12)
+howTitle.Size = UDim2.new(1, -32, 0, 28)
+howTitle.Font = Enum.Font.GothamBold
+howTitle.TextSize = 20
+howTitle.TextXAlignment = Enum.TextXAlignment.Left
+howTitle.Text = "How to Play"
+
+local howText = Instance.new("TextLabel")
+howText.Parent = howTo
+howText.BackgroundTransparency = 1
+howText.Position = UDim2.new(0, 16, 0, 48)
+howText.Size = UDim2.new(1, -32, 0, 170)
+howText.Font = Enum.Font.Gotham
+howText.TextSize = 16
+howText.TextXAlignment = Enum.TextXAlignment.Left
+howText.TextYAlignment = Enum.TextYAlignment.Top
+howText.TextWrapped = true
+
+local closeBtn = Instance.new("TextButton")
+closeBtn.Parent = howTo
+closeBtn.Position = UDim2.new(1, -120, 1, -52)
+closeBtn.Size = UDim2.new(0, 100, 0, 36)
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextSize = 16
+closeBtn.Text = "Start"
+closeBtn.BorderSizePixel = 0
+
+local closeCorner = Instance.new("UICorner")
+closeCorner.CornerRadius = UDim.new(0, 10)
+closeCorner.Parent = closeBtn
+
+local canCloseHowTo = true
+closeBtn.MouseButton1Click:Connect(function()
+	if not canCloseHowTo then return end
+	howTo.Visible = false
+end)
+
+-- ===== LEVEL SELECT MENU =====
+local levelMenu = Instance.new("Frame")
+levelMenu.Parent = gui
+levelMenu.Size = UDim2.new(0, 440, 0, 240)
+levelMenu.Position = UDim2.new(0.5, -220, 0.5, -120)
+levelMenu.BackgroundTransparency = 0.15
+levelMenu.Visible = false
+levelMenu.BorderSizePixel = 0
+
+local levelCorner = Instance.new("UICorner")
+levelCorner.CornerRadius = UDim.new(0, 14)
+levelCorner.Parent = levelMenu
+
+local levelTitle = Instance.new("TextLabel")
+levelTitle.Parent = levelMenu
+levelTitle.BackgroundTransparency = 1
+levelTitle.Position = UDim2.new(0, 16, 0, 12)
+levelTitle.Size = UDim2.new(1, -32, 0, 28)
+levelTitle.Font = Enum.Font.GothamBold
+levelTitle.TextSize = 20
+levelTitle.TextXAlignment = Enum.TextXAlignment.Left
+levelTitle.Text = "Select Level (L)"
+
+local buttonsFrame = Instance.new("Frame")
+buttonsFrame.Parent = levelMenu
+buttonsFrame.BackgroundTransparency = 1
+buttonsFrame.Position = UDim2.new(0, 16, 0, 54)
+buttonsFrame.Size = UDim2.new(1, -32, 0, 140)
+
+local grid = Instance.new("UIGridLayout")
+grid.Parent = buttonsFrame
+grid.CellSize = UDim2.new(0, 76, 0, 44)
+grid.CellPadding = UDim2.new(0, 10, 0, 10)
+
+local levelButtons = {}
+for i = 1, 5 do
+	local b = Instance.new("TextButton")
+	b.Parent = buttonsFrame
+	b.Name = "Level" .. i
+	b.Font = Enum.Font.GothamBold
+	b.TextSize = 16
+	b.Text = tostring(i)
+	b.BorderSizePixel = 0
+	b.BackgroundColor3 = levelColors[i]
+
+	local c = Instance.new("UICorner")
+	c.CornerRadius = UDim.new(0, 10)
+	c.Parent = b
+
+	b.MouseButton1Click:Connect(function()
+		levelSelectEvent:FireServer(i)
+	end)
+
+	levelButtons[i] = b
+end
+
+local hint = Instance.new("TextLabel")
+hint.Parent = levelMenu
+hint.BackgroundTransparency = 1
+hint.Position = UDim2.new(0, 16, 1, -40)
+hint.Size = UDim2.new(1, -32, 0, 28)
+hint.Font = Enum.Font.Gotham
+hint.TextSize = 14
+hint.TextXAlignment = Enum.TextXAlignment.Left
+hint.Text = "Locked levels unlock by beating the previous level."
+
+-- Toggle menu with L
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if gameProcessed then return end
+	if input.KeyCode == Enum.KeyCode.L then
+		levelMenu.Visible = not levelMenu.Visible
+	end
+end)
+
+local function updateLevelButtons(maxUnlocked)
+	for i, b in ipairs(levelButtons) do
+		b.BackgroundColor3 = levelColors[i]
+		if i <= maxUnlocked then
+			b.AutoButtonColor = true
+			b.Text = tostring(i)
+			b.BackgroundTransparency = 0
+		else
+			b.AutoButtonColor = false
+			b.Text = "🔒"
+			b.BackgroundTransparency = 0.45
+		end
+	end
+end
+
+-- ===== LASER LABEL =====
+laserEvent.OnClientEvent:Connect(function(data)
+	if typeof(data) ~= "table" then return end
+	if data.phase == "warn" then
+		laserLabel.Text = ("⚠ LASER WARNING: %s"):format(data.lane or "?")
+	elseif data.phase == "fire" then
+		laserLabel.Text = ("🔥 LASER ACTIVE: %s"):format(data.lane or "?")
+	else
+		laserLabel.Text = ""
+	end
+end)
+
+-- ===== DEV PANEL UI =====
+local devPanel = Instance.new("Frame")
+devPanel.Parent = gui
+devPanel.Size = UDim2.new(0, 460, 0, 280)
+devPanel.Position = UDim2.new(0.5, -230, 0.5, -140)
+devPanel.BackgroundTransparency = 0.12
+devPanel.Visible = false
+devPanel.BorderSizePixel = 0
+
+local devCorner = Instance.new("UICorner")
+devCorner.CornerRadius = UDim.new(0, 14)
+devCorner.Parent = devPanel
+
+local devTitle = Instance.new("TextLabel")
+devTitle.Parent = devPanel
+devTitle.BackgroundTransparency = 1
+devTitle.Position = UDim2.new(0, 16, 0, 12)
+devTitle.Size = UDim2.new(1, -32, 0, 28)
+devTitle.Font = Enum.Font.GothamBold
+devTitle.TextSize = 20
+devTitle.TextXAlignment = Enum.TextXAlignment.Left
+devTitle.Text = "Dev Control Panel (P)"
+
+local devHint = Instance.new("TextLabel")
+devHint.Parent = devPanel
+devHint.BackgroundTransparency = 1
+devHint.Position = UDim2.new(0, 16, 0, 44)
+devHint.Size = UDim2.new(1, -32, 0, 18)
+devHint.Font = Enum.Font.Gotham
+devHint.TextSize = 14
+devHint.TextXAlignment = Enum.TextXAlignment.Left
+devHint.Text = "Works only in Studio / your private server."
+
+local function mkBtn(text, x, y, w, h)
+	local b = Instance.new("TextButton")
+	b.Parent = devPanel
+	b.Text = text
+	b.Position = UDim2.new(0, x, 0, y)
+	b.Size = UDim2.new(0, w, 0, h)
+	b.Font = Enum.Font.GothamBold
+	b.TextSize = 14
+	b.BorderSizePixel = 0
+	local c = Instance.new("UICorner")
+	c.CornerRadius = UDim.new(0, 10)
+	c.Parent = b
+	return b
+end
+
+local function mkLabel(text, x, y)
+	local l = Instance.new("TextLabel")
+	l.Parent = devPanel
+	l.BackgroundTransparency = 1
+	l.Text = text
+	l.Position = UDim2.new(0, x, 0, y)
+	l.Size = UDim2.new(0, 200, 0, 18)
+	l.Font = Enum.Font.GothamBold
+	l.TextSize = 14
+	l.TextXAlignment = Enum.TextXAlignment.Left
+	return l
+end
+
+local function mkBox(x, y, w)
+	local tb = Instance.new("TextBox")
+	tb.Parent = devPanel
+	tb.Position = UDim2.new(0, x, 0, y)
+	tb.Size = UDim2.new(0, w, 0, 28)
+	tb.Font = Enum.Font.Gotham
+	tb.TextSize = 14
+	tb.Text = "1.0"
+	tb.ClearTextOnFocus = false
+	tb.BorderSizePixel = 0
+	local c = Instance.new("UICorner")
+	c.CornerRadius = UDim.new(0, 10)
+	c.Parent = tb
+	return tb
+end
+
+local devAllowed = false
+local speedBox = mkBox(16, 76, 90)
+local laserBox = mkBox(16, 132, 90)
+
+mkLabel("Obstacle Speed Multiplier (0.5 - 3)", 120, 82)
+mkLabel("Laser Frequency Multiplier (0.5 - 3)", 120, 138)
+
+local applySpeed = mkBtn("Apply Speed", 16, 106, 120, 24)
+local applyLaser = mkBtn("Apply Laser", 16, 162, 120, 24)
+
+local unlockAll = mkBtn("Unlock All Levels", 16, 200, 160, 32)
+local resetAll = mkBtn("Reset Round (All)", 190, 200, 160, 32)
+local clearAll = mkBtn("Clear Obstacles (All)", 16, 240, 160, 32)
+local restartAll = mkBtn("Restart Level (All)", 190, 240, 160, 32)
+local skipAll = mkBtn("Skip Level (All)", 364, 240, 80, 32)
+
+local flyStatus = mkLabel("Fly: OFF (Press F)", 364, 82)
+
+local function sendDev(action, value)
+	if not devAllowed then return end
+	devEvent:FireServer({action = action, value = value})
+end
+
+applySpeed.MouseButton1Click:Connect(function()
+	local v = tonumber(speedBox.Text)
+	if v then sendDev("SetSpeedMul", v) end
+end)
+
+applyLaser.MouseButton1Click:Connect(function()
+	local v = tonumber(laserBox.Text)
+	if v then sendDev("SetLaserFreqMul", v) end
+end)
+
+unlockAll.MouseButton1Click:Connect(function() sendDev("UnlockAll") end)
+resetAll.MouseButton1Click:Connect(function() sendDev("ResetRoundAll") end)
+clearAll.MouseButton1Click:Connect(function() sendDev("ClearObstaclesAll") end)
+restartAll.MouseButton1Click:Connect(function() sendDev("RestartLevelAll") end)
+skipAll.MouseButton1Click:Connect(function() sendDev("SkipLevelAll") end)
+
+-- Toggle dev panel with P
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if gameProcessed then return end
+	if input.KeyCode == Enum.KeyCode.P and devAllowed then
+		devPanel.Visible = not devPanel.Visible
+	end
+end)
+
+-- ===== FLY TOGGLE (dev only) =====
+local flying = false
+local flyVel, flyGyro
+
+local function stopFly()
+	flying = false
+	flyStatus.Text = "Fly: OFF (Press F)"
+	local char = player.Character
+	if not char then return end
+	local hrp = char:FindFirstChild("HumanoidRootPart")
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	if hum then hum.PlatformStand = false end
+	if flyVel then flyVel:Destroy() flyVel = nil end
+	if flyGyro then flyGyro:Destroy() flyGyro = nil end
+	if hrp then hrp.AssemblyLinearVelocity = Vector3.zero end
+end
+
+local function startFly()
+	local char = player.Character
+	if not char then return end
+	local hrp = char:FindFirstChild("HumanoidRootPart")
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	if not hrp or not hum then return end
+
+	flying = true
+	flyStatus.Text = "Fly: ON (Press F)"
+	hum.PlatformStand = true
+
+	flyVel = Instance.new("BodyVelocity")
+	flyVel.MaxForce = Vector3.new(1e9, 1e9, 1e9)
+	flyVel.Velocity = Vector3.zero
+	flyVel.Parent = hrp
+
+	flyGyro = Instance.new("BodyGyro")
+	flyGyro.MaxTorque = Vector3.new(1e9, 1e9, 1e9)
+	flyGyro.CFrame = hrp.CFrame
+	flyGyro.Parent = hrp
+end
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if gameProcessed then return end
+	if input.KeyCode == Enum.KeyCode.F and devAllowed then
+		if flying then stopFly() else startFly() end
+	end
+end)
+
+RunService.RenderStepped:Connect(function()
+	if not flying or not flyVel or not flyGyro then return end
+	local char = player.Character
+	if not char then return end
+	local hrp = char:FindFirstChild("HumanoidRootPart")
+	if not hrp then return end
+
+	-- 2.5D fly controls:
+	-- A/D move left/right (X), Space up, LeftControl down. Z stays 0.
+	local speed = 60
+	local vx = 0
+	local vy = 0
+
+	if UserInputService:IsKeyDown(Enum.KeyCode.A) then vx -= speed end
+	if UserInputService:IsKeyDown(Enum.KeyCode.D) then vx += speed end
+	if UserInputService:IsKeyDown(Enum.KeyCode.Space) then vy += speed end
+	if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then vy -= speed end
+
+	flyVel.Velocity = Vector3.new(vx, vy, 0)
+	flyGyro.CFrame = CFrame.new(hrp.Position, hrp.Position + Vector3.new(1,0,0))
+
+	-- lock Z
+	local p = hrp.Position
+	hrp.CFrame = CFrame.new(p.X, p.Y, 0)
+end)
+
+-- ===== Server UI updates =====
+uiEvent.OnClientEvent:Connect(function(data)
+	-- devAllowed from server
+	devAllowed = isDevLocal(data.isDev)
+	if not devAllowed then
+		devPanel.Visible = false
+		if flying then stopFly() end
+	end
+
+	stats.Text =
+		("Level: %d\nLives: %d\nTime: %s\nDistance: %d\nUnlocked: %d")
+		:format(
+			data.level or 1,
+			data.lives or 3,
+			fmtTime(data.timeLeft or 120),
+			data.distance or 0,
+			data.maxUnlocked or 1
+		)
+
+	updateLevelButtons(data.maxUnlocked or 1)
+
+	-- show current dev values
+	if devAllowed then
+		speedBox.Text = tostring(data.speedMul or 1)
+		laserBox.Text = tostring(data.laserFreqMul or 1)
+	end
+
+	-- How-To at the beginning
+	if data.showHowTo then
+		howTitle.Text = "How to Play"
+		howText.Text =
+			"- Survive each level for 2 minutes.\n" ..
+			"- Dodge the neon red obstacles.\n" ..
+			"- Lasers warn you before firing (LEFT/MIDDLE/RIGHT + FROM LEFT/RIGHT in levels 4-5).\n" ..
+			"- Touching an obstacle/laser removes a life.\n" ..
+			"- You have 3 lives per level.\n\n" ..
+			"Controls:\n" ..
+			"W/A/S/D to move, Space to jump.\n" ..
+			"Press L to open Level Select.\n" ..
+			(devAllowed and "\nDEV: Press P for panel, F to fly." or "")
+
+		howTo.Visible = true
+
+		canCloseHowTo = false
+		closeBtn.AutoButtonColor = false
+
+		task.spawn(function()
+			for t = 7, 1, -1 do
+				if not howTo.Visible then return end
+				closeBtn.Text = "Start (" .. t .. ")"
+				task.wait(1)
+			end
+			closeBtn.Text = "Start"
+			closeBtn.AutoButtonColor = true
+			canCloseHowTo = true
+		end)
+	end
+
+	-- Win popup
+	if data.win then
+		howTo.Visible = true
+		howTitle.Text = "You Win!"
+		howText.Text =
+			"You beat all 5 levels! 🎉\n\n" ..
+			"Press L to pick any unlocked level.\n" ..
+			"Try increasing speed / lasers in Dev Panel if testing."
+		closeBtn.Text = "Continue"
+		canCloseHowTo = true
+		closeBtn.AutoButtonColor = true
+	end
+end)
+	
