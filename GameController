@@ -39,6 +39,10 @@ local laserEvent = ReplicatedStorage:FindFirstChild("LaserEvent") or Instance.ne
 laserEvent.Name = "LaserEvent"
 laserEvent.Parent = ReplicatedStorage
 
+local resetRoundEvent = ReplicatedStorage:FindFirstChild("ResetRoundEvent") or Instance.new("RemoteEvent")
+resetRoundEvent.Name = "ResetRoundEvent"
+resetRoundEvent.Parent = ReplicatedStorage
+
 local devEvent = ReplicatedStorage:FindFirstChild("DevControlEvent") or Instance.new("RemoteEvent")
 devEvent.Name = "DevControlEvent"
 devEvent.Parent = ReplicatedStorage
@@ -478,6 +482,11 @@ levelSelectEvent.OnServerEvent:Connect(function(plr, requestedLevel)
 
 	s.level = requestedLevel
 	startLevel(plr)
+end)
+
+resetRoundEvent.OnServerEvent:Connect(function(plr)
+	if not state[plr] then return end
+	resetPlayerRound(plr)
 end)
 
 -- ===== DEV Control Panel server handling =====
