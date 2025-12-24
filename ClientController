@@ -14,6 +14,7 @@ local player = Players.LocalPlayer
 local uiEvent = ReplicatedStorage:WaitForChild("GameUIEvent")
 local levelSelectEvent = ReplicatedStorage:WaitForChild("LevelSelectEvent")
 local laserEvent = ReplicatedStorage:WaitForChild("LaserEvent")
+local resetRoundEvent = ReplicatedStorage:WaitForChild("ResetRoundEvent")
 local devEvent = ReplicatedStorage:WaitForChild("DevControlEvent")
 
 -- ===== local dev check (matches server rules) =====
@@ -208,6 +209,14 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	if gameProcessed then return end
 	if input.KeyCode == Enum.KeyCode.L then
 		levelMenu.Visible = not levelMenu.Visible
+	end
+end)
+
+-- Reset round with R
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if gameProcessed then return end
+	if input.KeyCode == Enum.KeyCode.R then
+		resetRoundEvent:FireServer()
 	end
 end)
 
@@ -473,6 +482,7 @@ uiEvent.OnClientEvent:Connect(function(data)
 			"Controls:\n" ..
 			"W/A/S/D to move, Space to jump.\n" ..
 			"Press L to open Level Select.\n" ..
+			"Press R to reset the round.\n" ..
 			(devAllowed and "\nDEV: Press P for panel, F to fly." or "")
 
 		howTo.Visible = true
