@@ -1,0 +1,619 @@
+-- ServerScriptService/GameController
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Config = require(ReplicatedStorage:WaitForChild("GameConfig"))
+
+local floor = workspace:WaitForChild("Floor")
+local startPoint = workspace:WaitForChild("StartPoint")
+
+-- ===== DEV SETTINGS =====
+local DEV_USER_IDS = {
+	[1063805146] = true, -- ✅ your UserId
+}
+
+local function isDev(plr: Player): boolean
+	-- Dev allowed only in Studio OR in private server you own
+	if not DEV_USER_IDS[plr.UserId] then return false end
+	if RunService:IsStudio() then return true end
+
+	-- Private server ownership check
+	if game.PrivateServerId ~= "" and game.PrivateServerOwnerId == plr.UserId then
+		return true
+	end
+
+	return false
+end
+
+-- ===== RemoteEvents =====
+local uiEvent = ReplicatedStorage:FindFirstChild("GameUIEvent") or Instance.new("RemoteEvent")
+uiEvent.Name = "GameUIEvent"
+uiEvent.Parent = ReplicatedStorage
+
+local levelSelectEvent = ReplicatedStorage:FindFirstChild("LevelSelectEvent") or Instance.new("RemoteEvent")
+levelSelectEvent.Name = "LevelSelectEvent"
+levelSelectEvent.Parent = ReplicatedStorage
+
+local laserEvent = ReplicatedStorage:FindFirstChild("LaserEvent") or Instance.new("RemoteEvent")
+laserEvent.Name = "LaserEvent"
+laserEvent.Parent = ReplicatedStorage
+
+local devEvent = ReplicatedStorage:FindFirstChild("DevControlEvent") or Instance.new("RemoteEvent")
+devEvent.Name = "DevControlEvent"
+devEvent.Parent = ReplicatedStorage
+
+-- ===== Per-player state =====
+-- state[player] = { level, maxUnlocked, lives, timeLeft, distance, token, showHowTo, win, speedMul, laserFreqMul }
+local state = {}
+
+-- ===== Utilities =====
+local function getPlayerFolder(plr, rootName)
+	local root = workspace:FindFirstChild(rootName)
+	if not root then
+		root = Instance.new("Folder")
+		root.Name = rootName
+		root.Parent = workspace
+	end
+
+	local f = root:FindFirstChild(tostring(plr.UserId))
+	if not f then
+		f = Instance.new("Folder")
+		f.Name = tostring(plr.UserId)
+		f.Parent = root
+	end
+	return f
+end
+
+local function getObstacleFolder(plr)
+	return getPlayerFolder(plr, "ObstaclesByPlayer")
+end
+
+local function getHazardFolder(plr)
+	return getPlayerFolder(plr, "HazardsByPlayer")
+end
+
+local function clearFolder(folder)
+	for _, obj in ipairs(folder:GetChildren()) do
+		obj:Destroy()
+	end
+end
+
+local function setLevelLook(level)
+	floor.Color = Config.Levels[level].color
+end
+
+local function teleportToStart(character)
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+	if hrp then
+		hrp.CFrame = CFrame.new(startPoint.Position + Vector3.new(0, 4, 0))
+	end
+end
+
+local function fireUI(plr)
+	local s = state[plr]
+	if not s then return end
+
+	uiEvent:FireClient(plr, {
+		level = s.level,
+		lives = s.lives,
+		timeLeft = s.timeLeft,
+		levelTime = Config.LevelTime,
+		distance = math.floor(s.distance or 0),
+		maxUnlocked = s.maxUnlocked or 1,
+		showHowTo = s.showHowTo == true,
+		win = s.win == true,
+		isDev = isDev(plr),
+		speedMul = s.speedMul or 1,
+		laserFreqMul = s.laserFreqMul or 1,
+	})
+
+	-- one-shot flags
+	s.showHowTo = false
+	s.win = false
+end
+
+local function resetPlayerRound(plr)
+	local s = state[plr]
+	if not s then return end
+
+	s.lives = Config.LivesPerLevel
+	s.timeLeft = Config.LevelTime
+	s.distance = 0
+
+	clearFolder(getObstacleFolder(plr))
+	clearFolder(getHazardFolder(plr))
+
+	setLevelLook(s.level)
+	if plr.Character then
+		teleportToStart(plr.Character)
+	end
+	fireUI(plr)
+end
+
+local function applyHitToPlayer(plr)
+	local s = state[plr]
+	if not s then return end
+
+	s.lives -= 1
+	if s.lives <= 0 then
+		-- restart same level
+		s.lives = Config.LivesPerLevel
+		s.timeLeft = Config.LevelTime
+		s.distance = 0
+
+		clearFolder(getObstacleFolder(plr))
+		clearFolder(getHazardFolder(plr))
+		setLevelLook(s.level)
+	end
+
+	if plr.Character then
+		teleportToStart(plr.Character)
+	end
+	fireUI(plr)
+end
+
+-- ===== Obstacles =====
+local function makeObstacle(plr, level, laneZ, heightY)
+	local folder = getObstacleFolder(plr)
+
+	local p = Instance.new("Part")
+	p.Name = "Obstacle"
+	p.Anchored = true
+	p.CanCollide = true
+	p.Material = Enum.Material.Neon
+	p.Color = Color3.fromRGB(255, 0, 0) -- ✅ neon red
+	p.Transparency = 0.08
+	p.Size = Vector3.new(2, 7, 8)
+	p.Position = Vector3.new(180, heightY, laneZ)
+	p.Parent = folder
+
+	p:SetAttribute("Level", level)
+	p:SetAttribute("HitLock", 0)
+
+	p.Touched:Connect(function(hit)
+		local char = hit:FindFirstAncestorOfClass("Model")
+		if not char then return end
+		local who = Players:GetPlayerFromCharacter(char)
+		if who ~= plr then return end
+
+		local now = os.clock()
+		local last = p:GetAttribute("HitLock") or 0
+		if now - last < 0.8 then return end
+		p:SetAttribute("HitLock", now)
+
+		applyHitToPlayer(plr)
+	end)
+
+	return p
+end
+
+local function spawnPattern(plr, level)
+	local lanes = Config.Lanes
+	local patterns = Config.Levels[level].patterns
+	local pattern = patterns[math.random(1, #patterns)]
+
+	if pattern == "single" then
+		makeObstacle(plr, level, lanes[math.random(1, #lanes)], 3)
+
+	elseif pattern == "pair" then
+		local a = math.random(1, #lanes)
+		local b = (a % #lanes) + 1
+		makeObstacle(plr, level, lanes[a], 3)
+		task.wait(0.18)
+		makeObstacle(plr, level, lanes[b], 3)
+
+	elseif pattern == "zigzag" then
+		local order = {1,2,3}
+		if math.random() < 0.5 then order = {3,2,1} end
+		makeObstacle(plr, level, lanes[order[1]], 3)
+		task.wait(0.20)
+		makeObstacle(plr, level, lanes[order[2]], 3)
+		task.wait(0.20)
+		makeObstacle(plr, level, lanes[order[3]], 3)
+
+	elseif pattern == "gate" then
+		local safe = math.random(1, #lanes)
+		for i = 1, #lanes do
+			if i ~= safe then
+				makeObstacle(plr, level, lanes[i], 3)
+			end
+		end
+
+	elseif pattern == "triple" then
+		makeObstacle(plr, level, lanes[math.random(1,#lanes)], 3)
+		task.wait(0.16)
+		makeObstacle(plr, level, lanes[math.random(1,#lanes)], 3)
+		task.wait(0.16)
+		makeObstacle(plr, level, lanes[math.random(1,#lanes)], 3)
+	end
+end
+
+-- ===== Lasers =====
+local function laneNameFromZ(z)
+	local lanes = Config.Lanes
+	if z == lanes[1] then return "LEFT" end
+	if z == lanes[2] then return "MIDDLE" end
+	return "RIGHT"
+end
+
+local function spawnLaneLaserForPlayer(plr)
+	local s = state[plr]
+	if not s then return end
+
+	local hazardFolder = getHazardFolder(plr)
+	local lanes = Config.Lanes
+
+	local laneZ = lanes[math.random(1, #lanes)]
+	local laneName = laneNameFromZ(laneZ)
+
+	-- Warning strip
+	local warn = Instance.new("Part")
+	warn.Name = "LaserWarning"
+	warn.Anchored = true
+	warn.CanCollide = false
+	warn.Material = Enum.Material.Neon
+	warn.Color = Color3.fromRGB(255, 0, 0)
+	warn.Transparency = 0.35
+	warn.Size = Vector3.new(260, 0.2, 10)
+	warn.Position = Vector3.new(0, 0.6, laneZ)
+	warn.Parent = hazardFolder
+
+	laserEvent:FireClient(plr, {phase="warn", lane=laneName})
+
+	task.wait(Config.Laser.warnTime)
+
+	if warn then warn:Destroy() end
+
+	-- Active beam
+	local beam = Instance.new("Part")
+	beam.Name = "LaserBeam"
+	beam.Anchored = true
+	beam.CanCollide = false
+	beam.Material = Enum.Material.Neon
+	beam.Color = Color3.fromRGB(255, 0, 0)
+	beam.Transparency = 0
+	beam.Size = Vector3.new(260, 3, 1.2)
+	beam.Position = Vector3.new(0, 4, laneZ)
+	beam.Parent = hazardFolder
+
+	laserEvent:FireClient(plr, {phase="fire", lane=laneName})
+
+	local hitCooldown = 0
+	beam.Touched:Connect(function(hit)
+		local char = hit:FindFirstAncestorOfClass("Model")
+		if not char then return end
+		local who = Players:GetPlayerFromCharacter(char)
+		if who ~= plr then return end
+
+		local now = os.clock()
+		if now - hitCooldown < 0.8 then return end
+		hitCooldown = now
+
+		applyHitToPlayer(plr)
+	end)
+
+	task.wait(Config.Laser.activeTime)
+
+	if beam then beam:Destroy() end
+	laserEvent:FireClient(plr, {phase="end"})
+end
+
+local function spawnSideLaserForPlayer(plr, fromSide) -- "LEFT" or "RIGHT"
+	local s = state[plr]
+	if not s then return end
+
+	local hazardFolder = getHazardFolder(plr)
+
+	local startX = (fromSide == "LEFT") and -150 or 150
+	local endX = (fromSide == "LEFT") and 150 or -150
+
+	laserEvent:FireClient(plr, {phase="warn", lane=("FROM " .. fromSide)})
+
+	local warn = Instance.new("Part")
+	warn.Name = "SideLaserWarning"
+	warn.Anchored = true
+	warn.CanCollide = false
+	warn.Material = Enum.Material.Neon
+	warn.Color = Color3.fromRGB(255, 0, 0)
+	warn.Transparency = 0.35
+	warn.Size = Vector3.new(2, 20, 26)
+	warn.Position = Vector3.new(startX, 6, 0)
+	warn.Parent = hazardFolder
+
+	task.wait(Config.Laser.warnTime)
+
+	if warn then warn:Destroy() end
+
+	local beam = Instance.new("Part")
+	beam.Name = "SideLaserBeam"
+	beam.Anchored = true
+	beam.CanCollide = false
+	beam.Material = Enum.Material.Neon
+	beam.Color = Color3.fromRGB(255, 0, 0)
+	beam.Transparency = 0
+	beam.Size = Vector3.new(2, 20, 26)
+	beam.Position = Vector3.new(startX, 6, 0)
+	beam.Parent = hazardFolder
+
+	laserEvent:FireClient(plr, {phase="fire", lane=("FROM " .. fromSide)})
+
+	local hitCooldown = 0
+	beam.Touched:Connect(function(hit)
+		local char = hit:FindFirstAncestorOfClass("Model")
+		if not char then return end
+		local who = Players:GetPlayerFromCharacter(char)
+		if who ~= plr then return end
+
+		local now = os.clock()
+		if now - hitCooldown < 0.8 then return end
+		hitCooldown = now
+
+		applyHitToPlayer(plr)
+	end)
+
+	local startTime = os.clock()
+	while os.clock() - startTime < Config.Laser.activeTime do
+		local alpha = (os.clock() - startTime) / Config.Laser.activeTime
+		local x = startX + (endX - startX) * alpha
+		beam.Position = Vector3.new(x, 6, 0)
+		task.wait()
+	end
+
+	if beam then beam:Destroy() end
+	laserEvent:FireClient(plr, {phase="end"})
+end
+
+-- ===== Main level runner =====
+local function startLevel(plr)
+	local s = state[plr]
+	if not s then return end
+
+	s.token = (s.token or 0) + 1
+	local myToken = s.token
+
+	clearFolder(getObstacleFolder(plr))
+	clearFolder(getHazardFolder(plr))
+	setLevelLook(s.level)
+
+	s.timeLeft = Config.LevelTime
+	s.lives = Config.LivesPerLevel
+	s.distance = 0
+
+	fireUI(plr)
+
+	-- Obstacle spawn loop
+	task.spawn(function()
+		while state[plr] and state[plr].token == myToken do
+			spawnPattern(plr, state[plr].level)
+			local L = Config.Levels[state[plr].level]
+			task.wait(L.spawnMin + math.random() * (L.spawnMax - L.spawnMin))
+		end
+	end)
+
+	-- Laser loop (frequency controlled)
+	task.spawn(function()
+		while state[plr] and state[plr].token == myToken do
+			local freq = math.clamp(state[plr].laserFreqMul or 1, 0.5, 3)
+			local minD = Config.Laser.minDelay / freq
+			local maxD = Config.Laser.maxDelay / freq
+			task.wait(minD + math.random() * (maxD - minD))
+
+			if not state[plr] or state[plr].token ~= myToken then break end
+
+			local level = state[plr].level
+			if level >= 4 and math.random() < (Config.Laser.sideChance or 0.45) then
+				local side = (math.random() < 0.5) and "LEFT" or "RIGHT"
+				spawnSideLaserForPlayer(plr, side)
+			else
+				spawnLaneLaserForPlayer(plr)
+			end
+		end
+	end)
+
+	-- Timer loop
+	task.spawn(function()
+		while state[plr] and state[plr].token == myToken do
+			task.wait(1)
+			local ss = state[plr]
+			if not ss or ss.token ~= myToken then break end
+
+			ss.timeLeft -= 1
+			ss.distance += (Config.Levels[ss.level].speed * (ss.speedMul or 1))
+			fireUI(plr)
+
+			if ss.timeLeft <= 0 then
+				-- unlock next
+				if ss.level == ss.maxUnlocked and ss.maxUnlocked < Config.LevelCount then
+					ss.maxUnlocked += 1
+				end
+
+				if ss.level < Config.LevelCount then
+					ss.level += 1
+				else
+					ss.win = true
+					ss.level = 1
+				end
+
+				startLevel(plr)
+				break
+			end
+		end
+	end)
+end
+
+-- Move obstacles
+RunService.Heartbeat:Connect(function(dt)
+	for _, plr in ipairs(Players:GetPlayers()) do
+		local s = state[plr]
+		if s then
+			local folder = getObstacleFolder(plr)
+			local spd = Config.Levels[s.level].speed * (s.speedMul or 1)
+
+			for _, p in ipairs(folder:GetChildren()) do
+				if p:IsA("BasePart") then
+					p.Position += Vector3.new(-spd * dt, 0, 0)
+					if p.Position.X < -200 then
+						p:Destroy()
+					end
+				end
+			end
+		end
+	end
+end)
+
+-- ===== Level select =====
+levelSelectEvent.OnServerEvent:Connect(function(plr, requestedLevel)
+	local s = state[plr]
+	if not s then return end
+	if typeof(requestedLevel) ~= "number" then return end
+
+	requestedLevel = math.floor(requestedLevel)
+	if requestedLevel < 1 or requestedLevel > Config.LevelCount then return end
+
+	if requestedLevel > (s.maxUnlocked or 1) then
+		fireUI(plr)
+		return
+	end
+
+	s.level = requestedLevel
+	startLevel(plr)
+end)
+
+-- ===== DEV Control Panel server handling =====
+local function resetRoundAll()
+	for _, p in ipairs(Players:GetPlayers()) do
+		resetPlayerRound(p)
+	end
+end
+
+local function clearObstaclesAll()
+	for _, p in ipairs(Players:GetPlayers()) do
+		clearFolder(getObstacleFolder(p))
+		clearFolder(getHazardFolder(p))
+		fireUI(p)
+	end
+end
+
+local function restartLevelAll()
+	for _, p in ipairs(Players:GetPlayers()) do
+		resetPlayerRound(p)
+	end
+end
+
+local function skipLevelAll()
+	for _, p in ipairs(Players:GetPlayers()) do
+		local s = state[p]
+		if s then
+			if s.level < Config.LevelCount then
+				s.level += 1
+			else
+				s.win = true
+				s.level = 1
+			end
+			startLevel(p)
+		end
+	end
+end
+
+devEvent.OnServerEvent:Connect(function(plr, payload)
+	if not isDev(plr) then return end
+	if typeof(payload) ~= "table" then return end
+
+	local action = payload.action
+	if action == "UnlockAll" then
+		local s = state[plr]
+		if s then
+			s.maxUnlocked = Config.LevelCount
+			fireUI(plr)
+		end
+		return
+	end
+
+	if action == "SetSpeedMul" then
+		local mul = tonumber(payload.value)
+		if not mul then return end
+		mul = math.clamp(mul, 0.5, 3)
+		for _, p in ipairs(Players:GetPlayers()) do
+			local s = state[p]
+			if s then s.speedMul = mul end
+			fireUI(p)
+		end
+		return
+	end
+
+	if action == "SetLaserFreqMul" then
+		local mul = tonumber(payload.value)
+		if not mul then return end
+		mul = math.clamp(mul, 0.5, 3)
+		for _, p in ipairs(Players:GetPlayers()) do
+			local s = state[p]
+			if s then s.laserFreqMul = mul end
+			fireUI(p)
+		end
+		return
+	end
+
+	if action == "ResetRoundAll" then
+		resetRoundAll()
+		return
+	end
+
+	if action == "ClearObstaclesAll" then
+		clearObstaclesAll()
+		return
+	end
+
+	if action == "RestartLevelAll" then
+		restartLevelAll()
+		return
+	end
+
+	if action == "SkipLevelAll" then
+		skipLevelAll()
+		return
+	end
+end)
+
+-- ===== Player lifecycle =====
+Players.PlayerAdded:Connect(function(plr)
+	state[plr] = {
+		level = 1,
+		maxUnlocked = 1,
+		lives = Config.LivesPerLevel,
+		timeLeft = Config.LevelTime,
+		distance = 0,
+		token = 0,
+		showHowTo = true,
+		win = false,
+		speedMul = 1,
+		laserFreqMul = 1,
+	}
+
+	-- Dev starts with all unlocked automatically (only in allowed dev environments)
+	if isDev(plr) then
+		state[plr].maxUnlocked = Config.LevelCount
+	end
+
+	plr.CharacterAdded:Connect(function(char)
+		task.wait(0.2)
+		teleportToStart(char)
+		startLevel(plr)
+	end)
+end)
+
+Players.PlayerRemoving:Connect(function(plr)
+	-- cleanup
+	local obRoot = workspace:FindFirstChild("ObstaclesByPlayer")
+	if obRoot then
+		local f = obRoot:FindFirstChild(tostring(plr.UserId))
+		if f then f:Destroy() end
+	end
+	local hzRoot = workspace:FindFirstChild("HazardsByPlayer")
+	if hzRoot then
+		local f = hzRoot:FindFirstChild(tostring(plr.UserId))
+		if f then f:Destroy() end
+	end
+
+	state[plr] = nil
+end)
